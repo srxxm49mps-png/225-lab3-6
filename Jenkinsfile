@@ -9,14 +9,10 @@ pipeline {
         KUBECONFIG = credentials('minterjt')                                                         //<------change this
     }
 
-    parameters {
-        string(name: 'PRODUCTION_IP', defaultValue: '', description: 'Course-assigned MetalLB IP; required for production deployment')
-        booleanParam(name: 'VERIFY_DEV_ONLY', defaultValue: true, description: 'Verify DEV while production IP assignment is unresolved')
-    }
-
     stages {
         stage('Checkout') {
             steps {
+                sh 'test "$(kubectl get nodes -o jsonpath=\'{.items[0].metadata.name}\')" = "minterjt-fl26-pool1-sfjhj-t2bf2"'
                 cleanWs()
                 checkout([$class: 'GitSCM', branches: [[name: '*/main']],
                           userRemoteConfigs: [[url: "${GITHUB_URL}"]]])
@@ -71,22 +67,15 @@ pipeline {
         }
 
         stage('Deploy to Prod Environment') {
-            when { expression { !params.VERIFY_DEV_ONLY } }
             steps {
                 script {
                     // Set up Kubernetes configuration using the specified KUBECONFIG
                     //sh "ls -la"
-                    if (!params.PRODUCTION_IP?.trim()) {
-                        error('Production requires the course-assigned MetalLB IP. DEV verification is available with VERIFY_DEV_ONLY.')
-                    }
-                    if (!(params.PRODUCTION_IP ==~ /(?:[0-9]{1,3}\.){3}[0-9]{1,3}/)) {
-                        error('PRODUCTION_IP must be an IPv4 address.')
-                    }
-                    sh "kubectl get ipaddresspools.metallb.io -A"
-                    sh "sed -i 's|PRODUCTION_IP|${params.PRODUCTION_IP}|' deployment-prod.yaml"
                     sh "sed -i 's|${DOCKER_IMAGE}:latest|${DOCKER_IMAGE}:${IMAGE_TAG}|' deployment-prod.yaml"
                     sh "kubectl apply -f deployment-prod.yaml"
                     sh "kubectl rollout status deployment/minterjt-lab36-prod --timeout=180s"
+                    sh "kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}'=10.48.229.166 service/minterjt-lab36-prod-service --timeout=120s"
+                    sh 'curl --fail --retry 10 --retry-delay 3 --retry-connrefused http://10.48.229.166:8082/ | grep "Lab 3-6 Works"'
                 }
             }
         }
@@ -101,7 +90,7 @@ pipeline {
     post {
 
         success {
-            slackSend color: "good", message: "Build Completed: ${env.JOB_NAME} ${env.BUILD_NUMBER} (DEV-only: ${params.VERIFY_DEV_ONLY})"
+            slackSend color: "good", message: "Build Completed: ${env.JOB_NAME} ${env.BUILD_NUMBER}"
         }
         unstable {
             slackSend color: "warning", message: "Build Unstable: ${env.JOB_NAME} ${env.BUILD_NUMBER}"
